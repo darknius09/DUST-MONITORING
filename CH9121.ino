@@ -2,6 +2,7 @@
 #include <LiquidCrystal_I2C.h>
 #include <SoftwareSerial.h>
 #include <FS.h> // SPIFFS untuk penyimpanan data
+#include "VirtuinoESP.h"
 
 // Konfigurasi LCD I2C
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -24,6 +25,10 @@ const unsigned long debounceDelay = 50;
 unsigned long alarmMuteStart = 0;
 bool alarmMuted = false;
 
+// Konfigurasi Virtuino
+VirtuinoESP virtuino;
+#define VIRTUINO_PASSWORD "1234"
+
 void setup() {
     Serial.begin(115200);
     ethSerial.begin(19200); // Sesuaikan baud rate dengan CH9121
@@ -43,6 +48,9 @@ void setup() {
     }
 
     Serial.println("Ketik 'reset' untuk mematikan alarm.");
+
+    // Inisialisasi Virtuino
+    virtuino.begin(ethSerial);
 }
 
 void loop() {
@@ -59,6 +67,9 @@ void loop() {
     Serial.print("Debu: ");
     Serial.print(dustDensity);
     Serial.println(" ug/m3");
+
+    // Update nilai sensor ke Virtuino (V0)
+    virtuino.vMemoryWrite(0, dustDensity);
 
     if (dustDensity > 50 && !alarmMuted) {
         digitalWrite(BUZZER, HIGH);
@@ -87,6 +98,13 @@ void loop() {
         Serial.println("Alarm kembali aktif.");
     }
 
+    // Membaca kontrol Virtuino (V1) untuk menyalakan/mematikan alarm
+    if (virtuino.vMemoryRead(1) == 1) {
+        muteAlarm();
+        virtuino.vMemoryWrite(1, 0);  // Reset nilai setelah digunakan
+    }
+
+    virtuino.run();
     delay(2000);
 }
 
