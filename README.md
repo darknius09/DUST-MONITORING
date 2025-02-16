@@ -5,10 +5,12 @@ monitoring debu GP2Y1014AU yang dihubungkan ke PC/Laptop Menggunakan module CH91
 **Sensor Debu Ditingkatkan**
 1.	Menambahkan aktivasi LED sensor sebelum membaca data (penting untuk GP2Y1014AU).
 2.	Menggunakan map() untuk mengkonversi hasil analog menjadi ug/m3.
+   
 **Alarm Berfungsi Otomatis**
 1.	Alarm menyala saat debu > 50 ug/m3.
 2.	Alarm mati otomatis jika debu turun di bawah 50 ug/m3.
-**# Reset Manual 10 Menit**
+
+** Reset Manual 10 Menit**
 1.	Jika tombol reset ditekan atau "reset" diketik di Serial Monitor, alarm mati sementara selama 10 menit.
 2.	Setelah 10 menit, alarm aktif kembali.
 
