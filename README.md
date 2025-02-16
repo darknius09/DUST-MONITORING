@@ -28,7 +28,6 @@ SCL	D1
 Wiring Buzzer & Tombol Reset
 Komponen	ESP8266 Pin
 Buzzer (+)	D3
-Buzzer (-)	GND
-Push Button	D4 (INPUT_PULLUP)
+Buzzer (-)	GNDPush Button	D4 (INPUT_PULLUP)
 
 Dengan wiring ini, sistem seharusnya dapat berjalan dengan CH9121 sebagai Ethernet, GP2Y1014AU sebagai sensor debu, LCD I2C sebagai display, dan buzzer serta tombol reset untuk alarm. 🚀
