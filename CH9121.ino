@@ -141,6 +141,11 @@ void loop() {
     float dV = Vo - Voc;
     if (dV < 0) dV = 0;
     float dustDensity = (dV / K) * 100.0;
+
+    // Cetak ke Serial Monitor
+    Serial.print("Dust Density: ");
+    Serial.print(dustDensity);
+    Serial.println(" ug/m3");
     
     // Tampilkan di LCD
     lcd.clear();
