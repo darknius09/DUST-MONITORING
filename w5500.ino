@@ -1,3 +1,4 @@
+#include <LiquidCrystal_I2C.h>
 #include <SPI.h>
 #include <Ethernet2.h>
 #include <Wire.h>
@@ -15,10 +16,13 @@ byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
 IPAddress ip(192, 168, 1, 177);
 EthernetServer server(80);
 
+// LCD Configuration
+LiquidCrystal_I2C lcd(0x27, 20, 4);  // Set LCD address to 0x27 for a 20x4 display
+
 // Dust Sensor Pins
 const int sharpLEDPin = D0;   // ESP8266 pin untuk LED sensor
 const int sharpVoPin = A0;    // Pin analog untuk output sensor
-const int buzzerPin = D3;     // Pin buzzer untuk alarm
+const int buzzerPin = D4;     // Pin buzzer untuk alarm
 
 // Konfigurasi Sensor Debu
 const float Voc = 0.6;        // Tegangan keluaran tipikal saat tidak ada debu
@@ -41,6 +45,15 @@ void setup() {
     ; // tunggu port serial terhubung
   }
 
+  // Inisialisasi LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Dust Monitor");
+  lcd.setCursor(0, 1);
+  lcd.print("Initializing...");
+
   // Set waktu awal (Anda bisa mengganti dengan sinkronisasi NTP nanti)
   setTime(0, 0, 0, 1, 1, 2024);  // Set waktu awal ke 1 Jan 2024 00:00:00
 
@@ -49,12 +62,33 @@ void setup() {
   pinMode(sharpLEDPin, OUTPUT);
 
   // Mulai koneksi Ethernet dan server
-  Ethernet.init(D1);  // Gunakan pin 10 untuk Ethernet SS
+  Ethernet.init(D3);  // Gunakan pin 15 untuk Ethernet SS
   Ethernet.begin(mac, ip);
   server.begin();
   
   Serial.print("Server berada di ");
   Serial.println(Ethernet.localIP());
+
+  // Tampilkan IP di LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("IP:");
+  lcd.setCursor(0, 1);
+  lcd.print(Ethernet.localIP());
+  delay(2000);
+}
+
+void updateLCDDisplay(float density) {
+  lcd.clear();
+  
+  // Baris 1: Densitas Debu
+  lcd.setCursor(0, 0);
+  lcd.print("Dust Density:");
+  
+  lcd.setCursor(0, 1);
+  lcd.print(density, 2);
+  lcd.print(" ug/m3");
+  
 }
 
 void simpanRiwayatDebu(float density, float volt) {
@@ -94,6 +128,9 @@ void measureDustDensity() {
     // Simpan pengukuran
     voltage[analogChannel] = vo * 1000.0;  // Konversi ke mV
     dustDensity[analogChannel] = dV / K * 100.0;
+
+    // Perbarui tampilan LCD
+    updateLCDDisplay(dustDensity[analogChannel]);
 
     // Simpan ke riwayat debu
     simpanRiwayatDebu(dustDensity[analogChannel], voltage[analogChannel]);
