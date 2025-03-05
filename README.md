@@ -10,19 +10,17 @@ monitoring debu GP2Y1014AU yang dihubungkan ke PC/Laptop Menggunakan module CH91
 1.	Alarm menyala saat debu > 50 ug/m3.
 2.	Alarm mati otomatis jika debu turun di bawah 50 ug/m3.
 
-** Reset Manual 10 Menit**
-1.	Jika tombol reset ditekan atau "reset" diketik di Serial Monitor, alarm mati sementara selama 10 menit.
-2.	Setelah 10 menit, alarm aktif kembali.
-
 # WIRING DUST-MONITORING
-3.	Wiring CH9121 ke ESP8266
+Wiring w5500 ke ESP8266
 1.	CH9121 Pin	ESP8266 Pin
-2.	TX	D6 (RX)
-3.	RX	D7 (TX)
-4.	VCC	3.3V
-5.	GND	GND
+2. SCK D5 (GPIO14)
+3. MISO D6 (GPIO12)
+4. MOSI D7 (GPIO13)
+5. CS D3
+6.	VCC	3.3V
+7.	GND	GND
 
-    Catatan: CH9121 beroperasi pada 3.3V, jangan langsung sambungkan ke 5V.
+    Catatan: W5500 beroperasi pada 3.3V, jangan langsung sambungkan ke 5V.
 
 **Wiring Sensor Debu GP2Y1014AU**
 GP2Y1014AU Pin	ESP8266 Pin
@@ -42,11 +40,9 @@ LCD Pin	ESP8266 Pin
 3.	SDA	D2
 4.	SCL	D1
 
-**Wiring Buzzer & Tombol Reset**
+**Wiring Buzzer**
 Komponen	ESP8266 Pin
-1.	Buzzer (+)	D3
+1.	Buzzer (+)	D4
 2.	Buzzer (-)	GND
-3.	Push Button (+)	D4 (INPUT_PULLUP)
-4.	Push Button (-)
 
-Dengan wiring ini, sistem seharusnya dapat berjalan dengan CH9121 sebagai Ethernet, GP2Y1014AU sebagai sensor debu, LCD I2C sebagai display, dan buzzer serta tombol reset untuk alarm. 🚀
+Dengan wiring ini, sistem seharusnya dapat berjalan dengan W5500 sebagai Ethernet WEBSERVER, GP2Y1014AU sebagai sensor debu, LCD I2C sebagai display, dan buzzer untuk alarm. 🚀
