@@ -1,444 +1,372 @@
-#include <LiquidCrystal_I2C.h>
-#include <Wire.h>
 #include <SPI.h>
-#include <Ethernet.h>
-#include <EthernetServer.h>
-#include <FS.h>
+#include <Ethernet2.h>
+#include <Wire.h>
 #include <TimeLib.h>
 
-// Pin untuk sensor debu
-const int sharpLEDPin = D0;
-const int sharpVoPin = A0;
-const int alarmPin = D3;
-const int buttonPin = D4;
+// Struktur untuk menyimpan data debu
+struct DustRecord {
+  time_t timestamp;
+  float dustDensity;
+  float voltage;
+};
 
-// Konfigurasi Ethernet W5500
-byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-IPAddress ip(192, 168, 0, 177);
+// Ethernet Configuration
+byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+IPAddress ip(192, 168, 1, 177);
 EthernetServer server(80);
 
-// LCD I2C
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+// Dust Sensor Pins
+const int sharpLEDPin = D0;   // ESP8266 pin untuk LED sensor
+const int sharpVoPin = A0;    // Pin analog untuk output sensor
+const int buzzerPin = D3;     // Pin buzzer untuk alarm
 
-// Konstanta dan variabel untuk sensor
-const float Voc = 0.6;
-const float K = 0.5;
-const int dustThreshold = 50;
-bool alarmDisabled = false;
-unsigned long alarmDisableTime = 0;
-unsigned long lastButtonPress = 0;
-const int debounceDelay = 200;
-
-// Variabel untuk menyimpan data sensor terbaru
-float currentDustDensity = 0;
-
-// Struktur untuk menyimpan data historis
-struct DustRecord {
-    unsigned long timestamp;
-    float dustDensity;
-};
+// Konfigurasi Sensor Debu
+const float Voc = 0.6;        // Tegangan keluaran tipikal saat tidak ada debu
+const float K = 0.5;          // Sensitivitas dalam V per 100ug/m3
+const float DUST_THRESHOLD = 50.0; // Ambang batas densitas debu dalam µg/m³
 
 // Array untuk menyimpan data sementara
 const int MAX_HISTORY = 144; // Menyimpan data 24 jam (dengan interval 10 menit)
 DustRecord dustHistory[MAX_HISTORY];
 int historyIndex = 0;
 
-// Variabel untuk interval penyimpanan data
-const unsigned long SAVE_INTERVAL = 600000; // 10 menit
-unsigned long lastSaveTime = 0;
-
-// Fungsi untuk menyimpan data ke SPIFFS dengan timestamp
-void saveToSPIFFS(float dustDensity) {
-    char filename[32];
-    sprintf(filename, "/dust_%lu.txt", now());
-    
-    File file = SPIFFS.open(filename, "a");
-    if (!file) {
-        Serial.println("Gagal membuka file");
-        return;
-    }
-    
-    // Format: timestamp,dust_density
-    file.print(now());
-    file.print(",");
-    file.println(dustDensity);
-    file.close();
-    
-    // Simpan ke array circular buffer
-    dustHistory[historyIndex].timestamp = now();
-    dustHistory[historyIndex].dustDensity = dustDensity;
-    historyIndex = (historyIndex + 1) % MAX_HISTORY;
-}
-
-// Fungsi untuk membaca data historis
-String getHistoricalDataJSON(unsigned long startTime, unsigned long endTime) {
-    String json = "[";
-    bool firstEntry = true;
-    
-    // Baca dari array circular buffer
-    for (int i = 0; i < MAX_HISTORY; i++) {
-        if (dustHistory[i].timestamp >= startTime && 
-            dustHistory[i].timestamp <= endTime &&
-            dustHistory[i].timestamp > 0) {
-            
-            if (!firstEntry) {
-                json += ",";
-            }
-            
-            json += "{\"time\":";
-            json += dustHistory[i].timestamp;
-            json += ",\"value\":";
-            json += dustHistory[i].dustDensity;
-            json += "}";
-            
-            firstEntry = false;
-        }
-    }
-    
-    json += "]";
-    return json;
-}
-
-// Fungsi untuk mengirim halaman web
-void sendWebPage(EthernetClient client) {
-    client.println("HTTP/1.1 200 OK");
-    client.println("Content-Type: text/html");
-    client.println("Connection: close");
-    client.println();
-    
-    // HTML head and styling
-    client.println("<!DOCTYPE HTML>");
-    client.println("<html>");
-    client.println("<head>");
-    client.println("<title>Dust Sensor Monitoring</title>");
-    client.println("<meta name='viewport' content='width=device-width, initial-scale=1'>");
-    client.println("<style>");
-    client.println("body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }");
-    client.println(".container { max-width: 800px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }");
-    client.println(".card { margin-bottom: 20px; padding: 15px; border-radius: 5px; background-color: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }");
-    client.println(".value { font-size: 36px; font-weight: bold; text-align: center; margin: 10px 0; }");
-    client.println(".chart-container { height: 300px; margin-top: 20px; }");
-    client.println(".status { padding: 5px 10px; border-radius: 15px; display: inline-block; }");
-    client.println(".good { background-color: #d4edda; color: #155724; }");
-    client.println(".warning { background-color: #fff3cd; color: #856404; }");
-    client.println(".danger { background-color: #f8d7da; color: #721c24; }");
-    client.println("button { background-color: #4CAF50; color: white; border: none; padding: 10px 15px; text-align: center; border-radius: 5px; cursor: pointer; }");
-    client.println("</style>");
-    
-    // Add JavaScript for chart
-    client.println("<script src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.9.4/Chart.min.js'></script>");
-    client.println("</head>");
-    client.println("<body>");
-    
-    client.println("<div class='container'>");
-    client.println("<h1>Dust Sensor Monitoring</h1>");
-    
-    // Current readings section
-    client.println("<div class='card'>");
-    client.println("<h2>Current Dust Density</h2>");
-    
-    // Status indicator
-    client.println("<div class='value'>");
-    client.print(currentDustDensity, 2);
-    client.println(" µg/m³</div>");
-    
-    client.print("<div style='text-align: center;'><span class='status ");
-    if (currentDustDensity <= 30) {
-        client.print("good'>Good");
-    } else if (currentDustDensity <= 50) {
-        client.print("warning'>Moderate");
-    } else {
-        client.print("danger'>Unhealthy");
-    }
-    client.println("</span></div>");
-    client.println("</div>");
-    
-    // Historical data chart
-    client.println("<div class='card'>");
-    client.println("<h2>Historical Data</h2>");
-    client.println("<div>");
-    client.println("<button onclick='fetchLastHour()'>Last Hour</button>");
-    client.println("<button onclick='fetchLast24Hours()'>Last 24 Hours</button>");
-    client.println("</div>");
-    client.println("<div class='chart-container'>");
-    client.println("<canvas id='dustChart'></canvas>");
-    client.println("</div>");
-    client.println("</div>");
-    
-    // JavaScript for fetching and displaying data
-    client.println("<script>");
-    client.println("let chart;");
-    client.println("function initChart(labels, data) {");
-    client.println("  const ctx = document.getElementById('dustChart').getContext('2d');");
-    client.println("  if (chart) chart.destroy();");
-    client.println("  chart = new Chart(ctx, {");
-    client.println("    type: 'line',");
-    client.println("    data: {");
-    client.println("      labels: labels,");
-    client.println("      datasets: [{");
-    client.println("        label: 'Dust Density (µg/m³)',");
-    client.println("        data: data,");
-    client.println("        borderColor: 'rgba(75, 192, 192, 1)',");
-    client.println("        backgroundColor: 'rgba(75, 192, 192, 0.2)',");
-    client.println("        tension: 0.1");
-    client.println("      }]");
-    client.println("    },");
-    client.println("    options: {");
-    client.println("      responsive: true,");
-    client.println("      maintainAspectRatio: false,");
-    client.println("      scales: {");
-    client.println("        y: {");
-    client.println("          beginAtZero: true");
-    client.println("        }");
-    client.println("      }");
-    client.println("    }");
-    client.println("  });");
-    client.println("}");
-    
-    client.println("function formatTime(timestamp) {");
-    client.println("  const date = new Date(timestamp * 1000);");
-    client.println("  return date.getHours() + ':' + (date.getMinutes() < 10 ? '0' : '') + date.getMinutes();");
-    client.println("}");
-    
-    client.println("function fetchLastHour() {");
-    client.println("  const endTime = Math.floor(Date.now() / 1000);");
-    client.println("  const startTime = endTime - 3600;");
-    client.println("  fetchData(startTime, endTime);");
-    client.println("}");
-    
-    client.println("function fetchLast24Hours() {");
-    client.println("  const endTime = Math.floor(Date.now() / 1000);");
-    client.println("  const startTime = endTime - 86400;");
-    client.println("  fetchData(startTime, endTime);");
-    client.println("}");
-    
-    client.println("function fetchData(startTime, endTime) {");
-    client.println("  fetch(`/data?start=${startTime}&end=${endTime}`)");
-    client.println("    .then(response => response.json())");
-    client.println("    .then(data => {");
-    client.println("      const labels = data.map(item => formatTime(item.time));");
-    client.println("      const values = data.map(item => item.value);");
-    client.println("      initChart(labels, values);");
-    client.println("    });");
-    client.println("}");
-    
-    client.println("// Auto-refresh current data every 10 seconds");
-    client.println("setInterval(() => {");
-    client.println("  fetch('/current')");
-    client.println("    .then(response => response.text())");
-    client.println("    .then(data => {");
-    client.println("      document.querySelector('.value').innerText = data + ' µg/m³';");
-    client.println("      // Update status class");
-    client.println("      const value = parseFloat(data);");
-    client.println("      const statusElem = document.querySelector('.status');");
-    client.println("      statusElem.classList.remove('good', 'warning', 'danger');");
-    client.println("      if (value <= 30) {");
-    client.println("        statusElem.classList.add('good');");
-    client.println("        statusElem.innerText = 'Good';");
-    client.println("      } else if (value <= 50) {");
-    client.println("        statusElem.classList.add('warning');");
-    client.println("        statusElem.innerText = 'Moderate';");
-    client.println("      } else {");
-    client.println("        statusElem.classList.add('danger');");
-    client.println("        statusElem.innerText = 'Unhealthy';");
-    client.println("      }");
-    client.println("    });");
-    client.println("}, 10000);");
-    
-    client.println("// Initialize with last hour data");
-    client.println("document.addEventListener('DOMContentLoaded', fetchLastHour);");
-    client.println("</script>");
-    
-    client.println("</div>");
-    client.println("</body>");
-    client.println("</html>");
-}
-
-// Fungsi untuk menghandle client request
-void handleClient(EthernetClient client) {
-    // Baca request pertama
-    String request = client.readStringUntil('\r');
-    client.readStringUntil('\n');
-    
-    // Parse request
-    if (request.indexOf("GET /data") != -1) {
-        // Handling untuk request data historis
-        int startIdx = request.indexOf("start=") + 6;
-        int endStartIdx = request.indexOf("&", startIdx);
-        int endIdx = request.indexOf("end=") + 4;
-        int endEndIdx = request.indexOf(" ", endIdx);
-        
-        unsigned long startTime = request.substring(startIdx, endStartIdx).toInt();
-        unsigned long endTime = request.substring(endIdx, endEndIdx).toInt();
-        
-        String jsonData = getHistoricalDataJSON(startTime, endTime);
-        
-        client.println("HTTP/1.1 200 OK");
-        client.println("Content-Type: application/json");
-        client.println("Connection: close");
-        client.println();
-        client.println(jsonData);
-    } 
-    else if (request.indexOf("GET /current") != -1) {
-        // Handling untuk request data saat ini
-        client.println("HTTP/1.1 200 OK");
-        client.println("Content-Type: text/plain");
-        client.println("Connection: close");
-        client.println();
-        client.println(currentDustDensity);
-    }
-    else {
-        // Default - kirim halaman web
-        sendWebPage(client);
-    }
-    
-    delay(10);
-    client.stop();
-}
+// Variabel Pengukuran Sensor Debu
+float dustDensity[6] = {0.0}; // Menyimpan pembacaan untuk hingga 6 sensor/saluran
+float voltage[6] = {0.0};     // Menyimpan tegangan untuk hingga 6 sensor/saluran
 
 void setup() {
-    pinMode(sharpLEDPin, OUTPUT);
-    pinMode(alarmPin, OUTPUT);
-    pinMode(buttonPin, INPUT_PULLUP);
-    
-    Serial.begin(115200);
-    
-    // Inisialisasi LCD
-    lcd.init();
-    lcd.backlight();
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Initializing...");
-    
-    if (!SPIFFS.begin()) {
-        Serial.println("Gagal mount SPIFFS");
-        lcd.setCursor(0, 1);
-        lcd.print("SPIFFS Failed");
-        delay(2000);
-    }
-    
-    // Inisialisasi Ethernet W5500
-    lcd.setCursor(0, 1);
-    lcd.print("Ethernet Init...");
-    
-    Ethernet.init(D1);  // Sesuaikan pin CS untuk W5500 (ubah sesuai wiring Anda)
-    Ethernet.begin(mac, ip);
-    
-    // Cek koneksi
-    if (Ethernet.hardwareStatus() == EthernetNoHardware) {
-        Serial.println("Ethernet shield tidak ditemukan");
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("No Ethernet");
-        lcd.setCursor(0, 1);
-        lcd.print("Shield");
-        delay(2000);
-    }
-    if (Ethernet.linkStatus() == LinkOFF) {
-        Serial.println("Kabel Ethernet tidak terhubung");
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("No Ethernet");
-        lcd.setCursor(0, 1);
-        lcd.print("Cable");
-        delay(2000);
-    }
-    
-    // Start the server
-    server.begin();
-    
-    // Set waktu awal (ganti sesuai kebutuhan)
-    setTime(0);
-    
-    Serial.print("Server aktif di ");
-    Serial.println(Ethernet.localIP());
-    
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Server Ready");
-    lcd.setCursor(0, 1);
-    lcd.print(Ethernet.localIP());
-    delay(2000);
+  // Inisialisasi Komunikasi Serial
+  Serial.begin(9600);
+  while (!Serial) {
+    ; // tunggu port serial terhubung
+  }
+
+  // Set waktu awal (Anda bisa mengganti dengan sinkronisasi NTP nanti)
+  setTime(0, 0, 0, 1, 1, 2024);  // Set waktu awal ke 1 Jan 2024 00:00:00
+
+  // Inisialisasi Pin Alarm
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(sharpLEDPin, OUTPUT);
+
+  // Mulai koneksi Ethernet dan server
+  Ethernet.init(D1);  // Gunakan pin 10 untuk Ethernet SS
+  Ethernet.begin(mac, ip);
+  server.begin();
+  
+  Serial.print("Server berada di ");
+  Serial.println(Ethernet.localIP());
 }
 
-void loop() {
-    // Baca nilai sensor
-    // Nyalakan LED sensor
+void simpanRiwayatDebu(float density, float volt) {
+  // Simpan data ke array siklis
+  dustHistory[historyIndex] = {
+    now(),  // timestamp saat ini
+    density,
+    volt
+  };
+
+  // Perbarui indeks dengan mode siklis
+  historyIndex = (historyIndex + 1) % MAX_HISTORY;
+}
+
+void measureDustDensity() {
+  for (int analogChannel = 0; analogChannel < 1; analogChannel++) {
+    // Nyalakan LED sensor debu
     digitalWrite(sharpLEDPin, LOW);
     delayMicroseconds(280);
     
-    // Baca nilai analog
-    int VoRaw = analogRead(sharpVoPin);
+    // Baca tegangan sensor
+    int voRaw = analogRead(sharpVoPin);
+    
+    // Matikan LED sensor debu
     digitalWrite(sharpLEDPin, HIGH);
     delayMicroseconds(9620);
     
-    // Konversi nilai ke voltase
-    float Vo = VoRaw / 1024.0 * 3.3;
-    float dV = Vo - Voc;
-    if (dV < 0) dV = 0;
-    currentDustDensity = (dV / K) * 100.0;
+    // Konversi ke tegangan
+    float vo = voRaw / 1024.0 * 5.0;
     
-    // Tampilkan di LCD
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Dust: ");
-    lcd.print(currentDustDensity);
-    lcd.print(" ug/m3");
-    lcd.setCursor(0, 1);
-    
-    // Display status on LCD
-    if (currentDustDensity <= 30) {
-        lcd.print("Status: Good");
-    } else if (currentDustDensity <= 50) {
-        lcd.print("Status: Moderate");
-    } else {
-        lcd.print("Status: Unhealthy");
+    // Hitung densitas debu
+    float dV = vo - Voc;
+    if (dV < 0) {
+      dV = 0;
     }
     
-    // Check if it's time to save data
-    unsigned long currentMillis = millis();
-    if (currentMillis - lastSaveTime >= SAVE_INTERVAL) {
-        saveToSPIFFS(currentDustDensity);
-        lastSaveTime = currentMillis;
+    // Simpan pengukuran
+    voltage[analogChannel] = vo * 1000.0;  // Konversi ke mV
+    dustDensity[analogChannel] = dV / K * 100.0;
+
+    // Simpan ke riwayat debu
+    simpanRiwayatDebu(dustDensity[analogChannel], voltage[analogChannel]);
+
+    // Periksa dan aktifkan alarm jika densitas debu tinggi
+    checkDustAlarm(dustDensity[analogChannel]);
+  }
+}
+
+void checkDustAlarm(float density) {
+  if (density > DUST_THRESHOLD) {
+    // Aktifkan Alarm
+    tone(buzzerPin, 1000, 500);  // nada 1kHz selama 500ms
+    delay(600);
+    noTone(buzzerPin);
+  }
+}
+
+void kirimRiwayatDebu(EthernetClient& client) {
+  client.println("<div class='history-container'>");
+  client.println("<h2>Riwayat Densitas Debu</h2>");
+  client.println("<table>");
+  client.println("<tr><th>Waktu</th><th>Densitas Debu (µg/m³)</th><th>Tegangan (mV)</th></tr>");
+  
+  // Mulai dari indeks terbaru dan kembali ke belakang
+  int startIndex = historyIndex;
+  for (int i = 0; i < MAX_HISTORY; i++) {
+    // Hitung indeks mundur
+    int index = (startIndex - 1 - i + MAX_HISTORY) % MAX_HISTORY;
+    
+    // Lewati entri kosong
+    if (dustHistory[index].timestamp == 0) continue;
+    
+    // Format waktu
+    char waktuStr[20];
+    snprintf(waktuStr, sizeof(waktuStr), 
+             "%02d/%02d/%04d %02d:%02d:%02d", 
+             day(dustHistory[index].timestamp),
+             month(dustHistory[index].timestamp),
+             year(dustHistory[index].timestamp),
+             hour(dustHistory[index].timestamp),
+             minute(dustHistory[index].timestamp),
+             second(dustHistory[index].timestamp)
+    );
+    
+    client.println("<tr>");
+    client.print("<td>"); client.print(waktuStr); client.println("</td>");
+    client.print("<td>"); client.print(dustHistory[index].dustDensity, 2); client.println("</td>");
+    client.print("<td>"); client.print(dustHistory[index].voltage, 2); client.println("</td>");
+    client.println("</tr>");
+  }
+  
+  client.println("</table>");
+  client.println("</div>");
+}
+
+void hapusRiwayatDebu() {
+  // Atur semua timestamp ke 0
+  for (int i = 0; i < MAX_HISTORY; i++) {
+    dustHistory[i].timestamp = 0;
+  }
+  historyIndex = 0;
+}
+
+void kirimHalamanUtama(EthernetClient& client) {
+  // Kirim halaman utama dengan HTML, CSS, dan JavaScript yang lengkap
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/html");
+  client.println("Connection: close");
+  client.println();
+  
+  client.println("<!DOCTYPE HTML>");
+  client.println("<html lang='id'>");
+  client.println("<head>");
+  client.println("<meta charset='UTF-8'>");
+  client.println("<title>Monitor Sensor Debu</title>");
+  client.println("<style>");
+  client.println("body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f4f4f4; }");
+  client.println(".container { background-color: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 20px; }");
+  client.println(".sensor-data { display: flex; justify-content: space-between; margin-bottom: 20px; }");
+  client.println(".sensor-card { background-color: #f9f9f9; border-left: 4px solid #3498db; padding: 15px; width: 45%; }");
+  client.println(".dust-warning { color: red; font-weight: bold; }");
+  client.println(".history-container { margin-top: 20px; }");
+  client.println("table { width: 100%; border-collapse: collapse; }");
+  client.println("table, th, td { border: 1px solid #ddd; }");
+  client.println("th, td { padding: 8px; text-align: left; }");
+  client.println("th { background-color: #f2f2f2; }");
+  client.println("button { margin: 10px 5px; padding: 8px 15px; background-color: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; }");
+  client.println("button:hover { background-color: #2980b9; }");
+  client.println("</style>");
+  client.println("</head>");
+  client.println("<body>");
+  client.println("<div class='container'>");
+  client.println("<h1>Monitor Sensor Debu</h1>");
+  
+  client.println("<div class='sensor-data'>");
+  for (int analogChannel = 0; analogChannel < 1; analogChannel++) {
+    client.println("<div class='sensor-card'>");
+    client.print("<h3>Sensor Debu ");
+    client.print(analogChannel);
+    client.println("</h3>");
+    
+    client.print("<p>Densitas: <span id='density'>");
+    client.print(dustDensity[analogChannel]);
+    client.println(" µg/m³</span></p>");
+    
+    client.print("<p>Tegangan: <span id='voltage'>");
+    client.print(voltage[analogChannel]);
+    client.println(" mV</span></p>");
+    
+    if (dustDensity[analogChannel] > DUST_THRESHOLD) {
+      client.println("<p class='dust-warning'>PERINGATAN: Debu Tinggi!</p>");
     }
     
-    // Cek tombol alarm
-    if (digitalRead(buttonPin) == LOW) {
-        if (currentMillis - lastButtonPress > debounceDelay) {
-            alarmDisabled = true;
-            alarmDisableTime = currentMillis;
-            Serial.println("Alarm dimatikan sementara");
-            
-            // Update LCD
-            lcd.clear();
-            lcd.setCursor(0, 0);
-            lcd.print("Alarm: Disabled");
-            lcd.setCursor(0, 1);
-            lcd.print("for 10 minutes");
-            delay(1000);
+    client.println("</div>");
+  }
+  client.println("</div>");
+  
+  client.println("<div class='actions'>");
+  client.println("<button id='history-btn' onclick='fetchHistory()'>Lihat Riwayat</button>");
+  client.println("<button onclick='clearHistory()'>Hapus Riwayat</button>");
+  client.println("</div>");
+  
+  client.println("<div id='history-container'></div>");
+  
+  // Tambahkan JavaScript untuk AJAX
+  client.println("<script>");
+  client.println("let historyVisible = false;");
+  
+  client.println("function fetchHistory() {");
+  client.println("  if (!historyVisible) {");
+  client.println("    fetch('/history')");
+  client.println("      .then(response => response.text())");
+  client.println("      .then(html => {");
+  client.println("        document.getElementById('history-container').innerHTML = html;");
+  client.println("        document.getElementById('history-btn').textContent = 'Tutup Riwayat';");
+  client.println("        historyVisible = true;");
+  client.println("      });");
+  client.println("  } else {");
+  client.println("    document.getElementById('history-container').innerHTML = '';");
+  client.println("    document.getElementById('history-btn').textContent = 'Lihat Riwayat';");
+  client.println("    historyVisible = false;");
+  client.println("  }");
+  client.println("}");
+  
+  client.println("function clearHistory() {");
+  client.println("  fetch('/clear')");
+  client.println("    .then(() => {");
+  client.println("      document.getElementById('history-container').innerHTML = '';");
+  client.println("      document.getElementById('history-btn').textContent = 'Lihat Riwayat';");
+  client.println("      historyVisible = false;");
+  client.println("    });");
+  client.println("}");
+  
+  client.println("function updateSensorData() {");
+  client.println("  fetch('/')");
+  client.println("    .then(response => response.text())");
+  client.println("    .then(html => {");
+  client.println("      const parser = new DOMParser();");
+  client.println("      const doc = parser.parseFromString(html, 'text/html');");
+  
+  client.println("      const densitySpan = document.getElementById('density');");
+  client.println("      const voltageSpan = document.getElementById('voltage');");
+  client.println("      const warningContainer = document.querySelector('.sensor-card');");
+  
+  client.println("      const newDensity = doc.querySelector('#density').textContent;");
+  client.println("      const newVoltage = doc.querySelector('#voltage').textContent;");
+  client.println("      const newWarningHTML = doc.querySelector('.dust-warning') ? doc.querySelector('.dust-warning').outerHTML : '';");
+  
+  client.println("      densitySpan.textContent = newDensity;");
+  client.println("      voltageSpan.textContent = newVoltage;");
+  
+  // Pembaruan status peringatan
+  client.println("      const existingWarning = warningContainer.querySelector('.dust-warning');");
+  client.println("      if (newWarningHTML && !existingWarning) {");
+  // Tambahkan peringatan baru jika belum ada
+  client.println("        const warningElement = document.createElement('div');");
+  client.println("        warningElement.innerHTML = newWarningHTML;");
+  client.println("        warningContainer.appendChild(warningElement.firstChild);");
+  client.println("      } else if (!newWarningHTML && existingWarning) {");
+  // Hapus peringatan jika kondisi bahaya sudah berlalu
+  client.println("        existingWarning.remove();");
+  client.println("      } else if (newWarningHTML && existingWarning) {");
+  // Perbarui teks peringatan jika berubah
+  client.println("        existingWarning.textContent = doc.querySelector('.dust-warning').textContent;");
+  client.println("      }");
+  
+  client.println("    });");
+  client.println("}");
+  
+  client.println("setInterval(updateSensorData, 5000);");
+  client.println("setInterval(function() {");
+  client.println("  if (historyVisible) {");
+  client.println("    fetch('/history')");
+  client.println("      .then(response => response.text())");
+  client.println("      .then(html => {");
+  client.println("        document.getElementById('history-container').innerHTML = html;");
+  client.println("      });");
+  client.println("  }");
+  client.println("}, 10000);"); // Refresh riwayat setiap 10 detik jika terbuka
+  client.println("</script>");
+  
+  client.println("</div>");
+  client.println("</body>");
+  client.println("</html>");
+}
+
+void loop() {
+  // Tunggu klien masuk
+  EthernetClient client = server.available();
+  
+  if (client) {
+    Serial.println("Klien terhubung");
+    
+    // Permintaan HTTP berakhir dengan baris kosong
+    boolean barisKosongSaatIni = true;
+    String barisKini = "";
+    
+    while (client.connected()) {
+      if (client.available()) {
+        char c = client.read();
+        barisKini += c;
+        Serial.write(c);
+        
+        // Periksa permintaan GET spesifik
+        if (barisKini.endsWith("GET /history")) {
+          // Kirim header respons HTTP standar
+          client.println("HTTP/1.1 200 OK");
+          client.println("Content-Type: text/html");
+          client.println("Connection: close");
+          client.println();
+          
+          // Kirim riwayat debu
+          kirimRiwayatDebu(client);
+          break;
         }
-        lastButtonPress = currentMillis;
+        else if (barisKini.endsWith("GET /clear")) {
+          hapusRiwayatDebu();
+          
+          // Alihkan kembali ke halaman utama
+          client.println("HTTP/1.1 302 Found");
+          client.println("Location: /");
+          client.println();
+          break;
+        }
+        
+        // Jika telah mencapai akhir baris dan baris kosong, permintaan HTTP telah berakhir
+        if (c == '\n' && barisKosongSaatIni) {
+          // Ukur densitas debu sebelum mengirim respons
+          measureDustDensity();
+          
+          // Kirim halaman utama
+          kirimHalamanUtama(client);
+          break;
+        }
+        
+        if (c == '\n') {
+          // Anda mulai baris baru
+          barisKosongSaatIni = true;
+          barisKini = "";
+        }
+        else if (c != '\r') {
+          // Anda mendapatkan karakter pada baris saat ini
+          barisKosongSaatIni = false;
+        }
+      }
     }
     
-    // Reset alarm setelah 10 menit
-    if (alarmDisabled && currentMillis - alarmDisableTime > 600000) {
-        alarmDisabled = false;
-        Serial.println("Alarm diaktifkan kembali");
-    }
+    // Beri waktu browser web menerima data
+    delay(1);
     
-    // Kontrol alarm
-    if (currentDustDensity > dustThreshold && !alarmDisabled) {
-        digitalWrite(alarmPin, HIGH);
-    } else {
-        digitalWrite(alarmPin, LOW);
-    }
-    
-    // Cek Client Web
-    EthernetClient client = server.available();
-    if (client) {
-        Serial.println("New client");
-        handleClient(client);
-    }
-    
-    delay(1000);
+    // Tutup koneksi
+    client.stop();
+    Serial.println("Klien terputus");
+  }
 }
